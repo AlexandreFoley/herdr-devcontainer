@@ -14,4 +14,3 @@ pub mod shell;
 pub mod stop;
 pub mod up;
 pub mod util;
-pub mod workdir;

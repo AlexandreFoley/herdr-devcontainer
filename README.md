@@ -253,20 +253,26 @@ which the CLI resolves from inside WSL and so holds a POSIX path on those same
 containers. Both are exact-match lookups; the plugin never guesses at how a host
 renders a path.
 
-That also defines the main limitation:
+The plugin adds writable bind mounts for the main repository and Herdr's shared
+worktree directory, with identical absolute source and target paths. Git's
+absolute `.git` and administrative worktree references therefore resolve in the
+container without requiring relative-path worktrees.
 
-> A linked worktree checked out **outside** the main repository directory is not
-> automatically mounted inside the main repository's container. When the current
-> directory cannot be mapped under the repository root, the pane starts at the
-> container's workspace root and prints a notice rather than pretending the
-> external checkout is available inside the container.
+The shared directory defaults to `~/.herdr/worktrees`; the plugin reads
+`[worktrees].directory` from Herdr's config, honoring `HERDR_CONFIG_PATH` and
+`XDG_CONFIG_HOME`. Mounting the shared root makes newly created Herdr worktrees
+available in the same container without rebuilding it for each checkout.
 
-For a current directory underneath the main repository root, the relative host
-path is appended to the container's `remoteWorkspaceFolder` and used as the
-`docker exec` working directory. That directory comes from Herdr's invocation
-context (the focused pane, then the workspace), not from the wrapper's own
-working directory — Herdr runs a plugin pane from the *plugin root*, so reading
-the process cwd would report every launch as an out-of-repo checkout.
+Panes start at the host's absolute current directory when it lies in either
+mount. Other directories fall back to the configured container workspace root
+with a notice. The current directory comes from Herdr's invocation context,
+not from the wrapper's plugin-root working directory.
+
+Containers created before these mounts were added must be recreated. The plugin
+checks their mounts and reports an error instead of silently opening the wrong
+checkout. It never removes an existing container automatically, since that
+would interrupt other container panes. Repository devcontainer files are not
+modified.
 
 ## Environment inside the pane
 

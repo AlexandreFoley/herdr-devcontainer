@@ -4,7 +4,7 @@ use std::time::Duration;
 use crate::discover::{self, Container};
 use crate::error::Error;
 use crate::exec::{self, Payload};
-use crate::{config, context, detect, lockfile, preflight, shell, up, workdir};
+use crate::{config, context, detect, lockfile, preflight, shell, up};
 
 /// Spec wrapper-flow step 4. `select_running` already refuses to choose between
 /// several running matches; here we only need its error, not its selection.
@@ -22,6 +22,7 @@ pub fn run_pane(shell: bool) -> Result<(), Error> {
     let process_cwd = std::env::current_dir()?;
     let repo_root = context::resolve_repo_root(&ctx, &process_cwd)?;
 
+    let worktrees_dir = context::managed_worktrees_dir()?;
     let repo_cfg = cfg.repo(&repo_root);
     let detection = detect::detect(&repo_root, &repo_cfg)?;
 
@@ -38,6 +39,7 @@ pub fn run_pane(shell: bool) -> Result<(), Error> {
         up::bring_up(
             &devcontainer_bin,
             &repo_root,
+            &worktrees_dir,
             detection.config_arg.as_deref(),
             Duration::from_secs(cfg.up_timeout_secs),
         )?
@@ -50,13 +52,13 @@ pub fn run_pane(shell: bool) -> Result<(), Error> {
             cwd.path.display()
         );
     }
-    let wd = workdir::map_workdir(&repo_root, &cwd.path, &up_result.remote_workspace_folder);
-    if wd.outside_repo {
-        eprintln!(
-            "note: current directory is not under {}; starting at the container workspace root",
-            repo_root.display()
-        );
-    }
+    // Same-path mounts keep absolute Git metadata and the active checkout aligned.
+    let workdir = if cwd.path.starts_with(&repo_root) || cwd.path.starts_with(&worktrees_dir) {
+        cwd.path.display().to_string()
+    } else {
+        eprintln!("note: current directory is outside the mounted repository and Herdr worktrees");
+        up_result.remote_workspace_folder.clone()
+    };
 
     let payload = if shell {
         Payload::Shell
@@ -80,7 +82,7 @@ pub fn run_pane(shell: bool) -> Result<(), Error> {
     let argv = exec::exec_argv(&exec::ExecSpec {
         container_id: &up_result.container_id,
         remote_user: up_result.remote_user.as_deref(),
-        workdir: &wd.path,
+        workdir: &workdir,
         shell: &exec_shell,
         env: &repo_cfg.env,
         payload: &payload,

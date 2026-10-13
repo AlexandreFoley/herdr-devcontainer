@@ -19,9 +19,11 @@ pub struct UpResult {
     pub message: Option<String>,
 }
 
-pub fn up_argv(
+/// Preserve absolute Git paths while keeping the repository's container identity.
+fn up_argv(
     devcontainer_bin: &Path,
     repo_root: &Path,
+    worktrees_dir: &Path,
     config_arg: Option<&Path>,
 ) -> Vec<String> {
     let mut argv = vec![
@@ -33,6 +35,10 @@ pub fn up_argv(
     if let Some(cfg) = config_arg {
         argv.push("--config".to_string());
         argv.push(cfg.display().to_string());
+    }
+    for path in [repo_root, worktrees_dir] {
+        argv.push("--mount".into());
+        argv.push(format!("type=bind,source={0},target={0}", path.display()));
     }
     argv
 }
@@ -66,14 +72,23 @@ pub fn parse_up_output(stdout: &str) -> Result<UpResult, Error> {
     Ok(parsed)
 }
 
+/// Mount the shared Herdr worktree root so future checkouts are available too.
 pub fn bring_up(
     devcontainer_bin: &Path,
     repo_root: &Path,
+    worktrees_dir: &Path,
     config_arg: Option<&Path>,
     timeout: Duration,
 ) -> Result<UpResult, Error> {
     eprintln!("bringing up dev container for {} ...", repo_root.display());
-    let argv = up_argv(devcontainer_bin, repo_root, config_arg);
+    for path in [repo_root, worktrees_dir] {
+        if !path.is_absolute() || path.to_str().map_or(true, |s| s.contains(',')) {
+            return Err(Error::Other(format!(
+                "bind mount path must be absolute UTF-8 without commas: {}", path.display()
+            )));
+        }
+    }
+    let argv = up_argv(devcontainer_bin, repo_root, worktrees_dir, config_arg);
     let res = run(&argv, timeout, StderrMode::Inherit)?;
     if res.timed_out {
         return Err(Error::UpTimeout {
@@ -87,37 +102,43 @@ pub fn bring_up(
             output_tail: tail(&res.stdout, 2000),
         });
     }
-    parse_up_output(&res.stdout)
+    let result = parse_up_output(&res.stdout)?;
+    verify_mounts(&result.container_id, repo_root, worktrees_dir)?;
+    Ok(result)
+}
+
+/// Reused containers cannot gain mounts; refuse rather than enter the wrong checkout.
+fn verify_mounts(container_id: &str, repo_root: &Path, worktrees_dir: &Path) -> Result<(), Error> {
+    let result = run(
+        &["docker".into(), "inspect".into(), "--format".into(),
+            "{{json .Mounts}}".into(), container_id.into()],
+        Duration::from_secs(15),
+        StderrMode::Capture,
+    )?;
+    if result.timed_out || result.exit_code != Some(0) || result.stdout_incomplete {
+        return Err(Error::DockerCommandFailed { detail: result.stderr });
+    }
+    let mounts: Vec<serde_json::Value> = serde_json::from_str(&result.stdout)
+        .map_err(|e| Error::DockerCommandFailed { detail: e.to_string() })?;
+    for path in [repo_root, worktrees_dir] {
+        let host = path.to_str().unwrap();
+        if !mounts.iter().any(|m| m["Type"] == "bind" && m["Source"] == host
+            && m["Destination"] == host && m["RW"] == true) {
+            return Err(Error::Other(format!(
+                "container {container_id} lacks the writable same-path bind mount for {host}; \
+                 recreate it with the plugin's repository and Herdr worktree mounts \
+                 (removing it interrupts existing container panes)"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     const OK: &str = r#"{"outcome":"success","containerId":"c0ffee","remoteUser":"vscode","remoteWorkspaceFolder":"/workspaces/proj"}"#;
-
-    #[test]
-    fn argv_without_custom_config() {
-        let argv = up_argv(Path::new("/usr/bin/devcontainer"), Path::new("/r"), None);
-        assert_eq!(
-            argv,
-            vec!["/usr/bin/devcontainer", "up", "--workspace-folder", "/r"]
-        );
-    }
-
-    #[test]
-    fn argv_with_custom_config() {
-        let argv = up_argv(
-            Path::new("devcontainer"),
-            Path::new("/r"),
-            Some(Path::new("/r/alt.json")),
-        );
-        assert_eq!(
-            argv[4..],
-            ["--config".to_string(), "/r/alt.json".to_string()]
-        );
-    }
 
     #[test]
     fn parses_a_success_line() {

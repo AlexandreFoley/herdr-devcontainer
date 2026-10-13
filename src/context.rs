@@ -101,6 +101,54 @@ pub fn pane_cwd(ctx: &PluginContext, process_cwd: &Path) -> PaneCwd {
     }
 }
 
+/// Follow Herdr's configured shared worktree directory, expanding its home shorthand.
+pub fn managed_worktrees_dir() -> Result<PathBuf, Error> {
+    let home = std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| Error::Other("HOME is unset; cannot locate Herdr worktrees".into()))?;
+    let config = std::env::var_os("HERDR_CONFIG_PATH")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var_os("XDG_CONFIG_HOME")
+                .filter(|p| !p.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| home.join(".config"))
+                .join("herdr/config.toml")
+        });
+    let text = match std::fs::read_to_string(&config) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(Error::ConfigUnreadable {
+            path: config.display().to_string(),
+            detail: e.to_string(),
+        }),
+    };
+    let parsed: toml::Value = toml::from_str(&text)
+        .map_err(|e| Error::ConfigUnreadable {
+            path: config.display().to_string(),
+            detail: e.to_string(),
+        })?;
+    let directory = parsed.get("worktrees")
+        .and_then(|w| w.get("directory"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or("~/.herdr/worktrees");
+    let path = if directory == "~" {
+        home
+    } else if let Some(relative) = directory.strip_prefix("~/") {
+        home.join(relative)
+    } else {
+        PathBuf::from(directory)
+    };
+    if !path.is_absolute() {
+        return Err(Error::Other("Herdr worktrees.directory must be absolute or home-relative".into()));
+    }
+    // The shared root must exist even when no worktree has been created yet.
+    std::fs::create_dir_all(&path)?;
+    Ok(path.canonicalize()?)
+}
+
 /// The first `worktree` entry of `git worktree list --porcelain` is the main
 /// worktree — the repo-scoped container identity from the spec.
 fn main_worktree_root(dir: &Path) -> Option<PathBuf> {

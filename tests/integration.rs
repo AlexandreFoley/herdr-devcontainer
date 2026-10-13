@@ -286,7 +286,7 @@ fn bring_up_exec_and_stop_roundtrip() {
     let repo = fixture_repo(tmp.path());
     let _cleanup = StopFixtureContainer { repo: repo.clone() };
 
-    let result = up::bring_up(&devcontainer_bin, &repo, None, Duration::from_secs(300))
+    let result = up::bring_up(&devcontainer_bin, &repo, tmp.path(), None, Duration::from_secs(300))
         .expect("devcontainer up");
     assert!(!result.container_id.is_empty());
     assert!(result.remote_workspace_folder.starts_with('/'));
@@ -390,4 +390,60 @@ fn the_binary_brings_up_and_execs_from_a_pane_invocation() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("stopping container"), "stdout: {stdout}");
     assert!(stdout.contains("stopped."), "stdout: {stdout}");
+}
+
+/// Absolute Git administrative paths must resolve from an external worktree.
+#[test]
+#[ignore = "requires docker and @devcontainers/cli"]
+fn absolute_worktree_paths_resolve_inside_container() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = fixture_repo(tmp.path());
+    let image = std::env::var("HERDR_DEVC_TEST_IMAGE")
+        .unwrap_or_else(|_| "mcr.microsoft.com/devcontainers/base:alpine".into());
+    std::fs::write(
+        repo.join(".devcontainer/devcontainer.json"),
+        serde_json::json!({"image": image, "updateRemoteUserUID": false}).to_string(),
+    ).unwrap();
+    sh_ok(&repo, "git", &["-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "--allow-empty", "-m", "fixture"]);
+    let worktree = tmp.path().join("external worktree");
+    sh_ok(&repo, "git", &["worktree", "add", worktree.to_str().unwrap(), "-b", "topic"]);
+    let _cleanup = StopFixtureContainer { repo: repo.clone() };
+    let cli = preflight::find_devcontainer(&std::env::var("PATH").unwrap()).unwrap();
+    let result = up::bring_up(&cli, &repo, tmp.path(), None, Duration::from_secs(300)).unwrap();
+    let out = Command::new("docker")
+        .args(["exec", "-w"]).arg(&worktree).arg(&result.container_id)
+        .args(["git", "rev-parse", "--show-toplevel"]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), worktree.to_str().unwrap());
+    let main = Command::new("docker").args(["exec", "-w"]).arg(&repo)
+        .arg(&result.container_id).args(["git", "worktree", "list", "--porcelain"])
+        .output().unwrap();
+    assert!(main.status.success(), "{}", String::from_utf8_lossy(&main.stderr));
+    assert!(String::from_utf8_lossy(&main.stdout).contains(worktree.to_str().unwrap()));
+    // A sibling created after bring-up must work without container recreation.
+    let sibling = tmp.path().join("next worktree");
+    sh_ok(&repo, "git", &["worktree", "add", sibling.to_str().unwrap(), "-b", "next"]);
+    let config = tmp.path().join("config");
+    std::fs::create_dir_all(config.join("herdr-devcontainer")).unwrap();
+    std::fs::create_dir_all(config.join("herdr")).unwrap();
+    std::fs::write(config.join("herdr/config.toml"),
+        format!("[worktrees]\ndirectory = {:?}\n", tmp.path())).unwrap();
+    std::fs::write(config.join("herdr-devcontainer/config.toml"),
+        "command = \"printf 'checkout='; git rev-parse --show-toplevel\"\n").unwrap();
+    let ctx = serde_json::json!({
+        "focused_pane_cwd": sibling,
+        "worktree": {"repo_root": repo}
+    });
+    let bin = env!("CARGO_BIN_EXE_herdr-devc");
+    let pane = Command::new("script")
+        .args(["-qec", &format!("{bin} pane"), "/dev/null"])
+        .env("HERDR_PLUGIN_CONTEXT_JSON", ctx.to_string())
+        .env("HERDR_CONFIG_PATH", config.join("herdr/config.toml"))
+        .env("XDG_CONFIG_HOME", config)
+        .output().unwrap();
+    assert!(pane.status.success(), "{}", String::from_utf8_lossy(&pane.stdout));
+    assert!(String::from_utf8_lossy(&pane.stdout)
+        .contains(&format!("checkout={}", sibling.display())));
+    sh_ok(tmp.path(), "docker", &["rm", "-f", &result.container_id]);
 }
