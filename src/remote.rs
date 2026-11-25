@@ -257,6 +257,10 @@ impl SshTarget {
             "BatchMode=yes".to_string(),
             "-o".to_string(),
             "ConnectTimeout=10".to_string(),
+            "-o".to_string(),
+            "ServerAliveInterval=5".to_string(),
+            "-o".to_string(),
+            "ServerAliveCountMax=3".to_string(),
         ];
         match target.strip_prefix("ssh://") {
             Some(rest) => {
