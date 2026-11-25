@@ -25,6 +25,7 @@ fn up_argv(
     repo_root: &Path,
     worktrees_dir: &Path,
     config_arg: Option<&Path>,
+    extra_args: &[String],
 ) -> Vec<String> {
     let mut argv = vec![
         devcontainer_bin.display().to_string(),
@@ -40,6 +41,7 @@ fn up_argv(
         argv.push("--mount".into());
         argv.push(format!("type=bind,source={0},target={0}", path.display()));
     }
+    argv.extend(extra_args.iter().cloned());
     argv
 }
 
@@ -78,17 +80,25 @@ pub fn bring_up(
     repo_root: &Path,
     worktrees_dir: &Path,
     config_arg: Option<&Path>,
+    extra_args: &[String],
     timeout: Duration,
 ) -> Result<UpResult, Error> {
     eprintln!("bringing up dev container for {} ...", repo_root.display());
     for path in [repo_root, worktrees_dir] {
         if !path.is_absolute() || path.to_str().map_or(true, |s| s.contains(',')) {
             return Err(Error::Other(format!(
-                "bind mount path must be absolute UTF-8 without commas: {}", path.display()
+                "bind mount path must be absolute UTF-8 without commas: {}",
+                path.display()
             )));
         }
     }
-    let argv = up_argv(devcontainer_bin, repo_root, worktrees_dir, config_arg);
+    let argv = up_argv(
+        devcontainer_bin,
+        repo_root,
+        worktrees_dir,
+        config_arg,
+        extra_args,
+    );
     let res = run(&argv, timeout, StderrMode::Inherit)?;
     if res.timed_out {
         return Err(Error::UpTimeout {
@@ -110,20 +120,33 @@ pub fn bring_up(
 /// Reused containers cannot gain mounts; refuse rather than enter the wrong checkout.
 fn verify_mounts(container_id: &str, repo_root: &Path, worktrees_dir: &Path) -> Result<(), Error> {
     let result = run(
-        &["docker".into(), "inspect".into(), "--format".into(),
-            "{{json .Mounts}}".into(), container_id.into()],
+        &[
+            "docker".into(),
+            "inspect".into(),
+            "--format".into(),
+            "{{json .Mounts}}".into(),
+            container_id.into(),
+        ],
         Duration::from_secs(15),
         StderrMode::Capture,
     )?;
     if result.timed_out || result.exit_code != Some(0) || result.stdout_incomplete {
-        return Err(Error::DockerCommandFailed { detail: result.stderr });
+        return Err(Error::DockerCommandFailed {
+            detail: result.stderr,
+        });
     }
-    let mounts: Vec<serde_json::Value> = serde_json::from_str(&result.stdout)
-        .map_err(|e| Error::DockerCommandFailed { detail: e.to_string() })?;
+    let mounts: Vec<serde_json::Value> =
+        serde_json::from_str(&result.stdout).map_err(|e| Error::DockerCommandFailed {
+            detail: e.to_string(),
+        })?;
     for path in [repo_root, worktrees_dir] {
         let host = path.to_str().unwrap();
-        if !mounts.iter().any(|m| m["Type"] == "bind" && m["Source"] == host
-            && m["Destination"] == host && m["RW"] == true) {
+        if !mounts.iter().any(|m| {
+            m["Type"] == "bind"
+                && m["Source"] == host
+                && m["Destination"] == host
+                && m["RW"] == true
+        }) {
             return Err(Error::Other(format!(
                 "container {container_id} lacks the writable same-path bind mount for {host}; \
                  recreate it with the plugin's repository and Herdr worktree mounts \
@@ -139,6 +162,50 @@ mod tests {
     use super::*;
 
     const OK: &str = r#"{"outcome":"success","containerId":"c0ffee","remoteUser":"vscode","remoteWorkspaceFolder":"/workspaces/proj"}"#;
+
+    #[test]
+    fn mounts_precede_extra_args() {
+        let argv = up_argv(
+            Path::new("devcontainer"),
+            Path::new("/r"),
+            Path::new("/w"),
+            None,
+            &["--build-no-cache".to_string()],
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "devcontainer",
+                "up",
+                "--workspace-folder",
+                "/r",
+                "--mount",
+                "type=bind,source=/r,target=/r",
+                "--mount",
+                "type=bind,source=/w,target=/w",
+                "--build-no-cache",
+            ]
+        );
+    }
+
+    #[test]
+    fn argv_with_custom_config() {
+        let argv = up_argv(
+            Path::new("devcontainer"),
+            Path::new("/r"),
+            Path::new("/w"),
+            Some(Path::new("/r/alt.json")),
+            &[],
+        );
+        assert_eq!(
+            argv[4..7],
+            [
+                "--config".to_string(),
+                "/r/alt.json".to_string(),
+                "--mount".to_string()
+            ]
+        );
+    }
 
     #[test]
     fn parses_a_success_line() {

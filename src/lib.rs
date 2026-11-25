@@ -9,6 +9,7 @@ pub mod lockfile;
 pub mod open;
 pub mod pane;
 pub mod preflight;
+pub mod remote;
 pub mod run;
 pub mod shell;
 pub mod stop;

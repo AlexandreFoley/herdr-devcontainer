@@ -12,9 +12,18 @@ fn main() {
             }
             result
         }
+        Some("remote") => {
+            let result = herdr_devcontainer::remote::run_remote(&args[1..]);
+            if result.is_ok() {
+                hold();
+            }
+            result
+        }
         Some("open") => open::run_open(args.get(1).map(String::as_str)),
         _ => {
-            eprintln!("usage: herdr-devc <pane [--shell] | stop | open <entrypoint>>");
+            eprintln!(
+                "usage: herdr-devc <pane [--shell] | stop | remote install [<machine>...] | open <entrypoint>>"
+            );
             std::process::exit(2);
         }
     };

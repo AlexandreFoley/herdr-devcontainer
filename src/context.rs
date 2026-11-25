@@ -120,17 +120,19 @@ pub fn managed_worktrees_dir() -> Result<PathBuf, Error> {
     let text = match std::fs::read_to_string(&config) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(Error::ConfigUnreadable {
-            path: config.display().to_string(),
-            detail: e.to_string(),
-        }),
+        Err(e) => {
+            return Err(Error::ConfigUnreadable {
+                path: config.display().to_string(),
+                detail: e.to_string(),
+            })
+        }
     };
-    let parsed: toml::Value = toml::from_str(&text)
-        .map_err(|e| Error::ConfigUnreadable {
-            path: config.display().to_string(),
-            detail: e.to_string(),
-        })?;
-    let directory = parsed.get("worktrees")
+    let parsed: toml::Value = toml::from_str(&text).map_err(|e| Error::ConfigUnreadable {
+        path: config.display().to_string(),
+        detail: e.to_string(),
+    })?;
+    let directory = parsed
+        .get("worktrees")
         .and_then(|w| w.get("directory"))
         .and_then(toml::Value::as_str)
         .unwrap_or("~/.herdr/worktrees");
@@ -142,7 +144,9 @@ pub fn managed_worktrees_dir() -> Result<PathBuf, Error> {
         PathBuf::from(directory)
     };
     if !path.is_absolute() {
-        return Err(Error::Other("Herdr worktrees.directory must be absolute or home-relative".into()));
+        return Err(Error::Other(
+            "Herdr worktrees.directory must be absolute or home-relative".into(),
+        ));
     }
     // The shared root must exist even when no worktree has been created yet.
     std::fs::create_dir_all(&path)?;

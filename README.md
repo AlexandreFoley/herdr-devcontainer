@@ -62,7 +62,7 @@ cannot drift away from what actually compiles.
 Install the latest reviewed release:
 
 ```sh
-herdr plugin install gambtho/herdr-devcontainer --ref v0.2.0
+herdr plugin install gambtho/herdr-devcontainer --ref v0.2.1
 ```
 
 Herdr clones the tagged source and runs the manifest's `cargo build --release`
@@ -92,19 +92,21 @@ herdr plugin link /path/to/herdr-devcontainer
 
 ## Entrypoints
 
-Three panes, and one action per pane that opens it from anywhere:
+Four panes, and one action per pane that opens it from anywhere:
 
 | Pane id | Action id | What it does |
 |---|---|---|
 | `shell` | `devcontainer.open-shell` | The container user's shell, interactive, inside the repository's Dev Container |
 | `command` | `devcontainer.open-command` | Runs the configured `command` payload through that same interactive shell; default `claude` |
 | `stop` | `devcontainer.open-stop` | Popup that identifies the repository's container — and, for a Compose-based Dev Container, every service alongside it — names them, asks for confirmation, and stops them |
+| `remote` | `devcontainer.open-remote` | Popup that copies this plugin to every enabled saved SSH machine and links it there; run it from a Local workspace |
 
 Open a pane directly:
 
 ```sh
 herdr plugin pane open --plugin devcontainer --entrypoint shell
 herdr plugin pane open --plugin devcontainer --entrypoint command
+herdr plugin pane open --plugin devcontainer --entrypoint remote
 ```
 
 Or invoke the equivalent action. The CLI takes the bare action id, with
@@ -114,6 +116,7 @@ Or invoke the equivalent action. The CLI takes the bare action id, with
 herdr plugin action invoke open-shell --plugin devcontainer
 herdr plugin action invoke open-command --plugin devcontainer
 herdr plugin action invoke open-stop --plugin devcontainer
+herdr plugin action invoke open-remote --plugin devcontainer
 ```
 
 Opening a shell or command pane is the explicit lifecycle trigger. Container
@@ -136,6 +139,49 @@ before the rest, so it releases its database connections first. If the Dev
 Container has exited on its own while its services keep running, stop says so
 and offers to stop what is left — an absent Dev Container is not an absent
 project.
+
+## Remote machines
+
+Herdr keeps plugins **per server**. A workspace on a saved SSH machine runs its
+own Herdr server, does not inherit the plugin installed on your local machine,
+and does not copy any executable over SSH. Without the plugin there, invoking
+`devcontainer.open-shell` against that workspace fails on the remote side and
+the local TUI shows nothing.
+
+Install it once per machine from a Local workspace — either the `remote` pane
+above, or directly:
+
+```sh
+herdr plugin pane open --plugin devcontainer --entrypoint remote
+```
+
+The popup copies the already-built plugin to
+`~/.herdr/devcontainer-plugin` on each enabled saved machine and links it there
+with `herdr --machine <id> plugin link`. Name machines to limit the scope:
+
+```sh
+herdr-devc remote install kpu-2 "Build machine"
+```
+
+(When running the binary from this checkout, it is
+`./target/release/herdr-devc`.) Re-run it after updating the plugin; the copy
+and link replace the previous remote registration.
+
+SSH authentication must work without prompts, because the copy runs
+non-interactively. If it fails with an authentication error, run
+`herdr machine reconnect <label-or-id>` in a terminal and retry. The local build
+is copied only to a Linux machine with the same CPU architecture; a different
+architecture or macOS needs its own install from source on that machine:
+
+```sh
+ssh <host> 'herdr plugin install gambtho/herdr-devcontainer --ref v0.2.1 --yes'
+```
+
+Docker and the Dev Containers CLI are **not** copied. Each remote machine needs
+its own reachable Docker daemon and `devcontainer` CLI, and its own repository
+checkout and `~/.config/herdr-devcontainer/config.toml`. Opening a shell on a
+machine that is missing one of them prints the normal preflight error in the new
+remote pane, so the cause is visible there rather than silently swallowed.
 
 ## Why use it
 
@@ -194,27 +240,39 @@ command = "claude"
 # Ceiling for `devcontainer up`, in seconds.
 up_timeout_secs = 300
 
+# Extra arguments appended to every `devcontainer up`.
+up_args = ["--log-level", "debug"]
+
 [repos."/home/you/workspace/foo"]
 enabled = "auto"                                 # "auto" (default) | "true" | "false"
 config = ".devcontainer/alt/devcontainer.json"   # repo-relative
 shell = "/bin/zsh"                               # default: the container user's login shell
 env = ["ANTHROPIC_BASE_URL=http://proxy:8080"]   # passed as `docker exec -e`
+up_args = ["--mount", "type=bind,source=/data,target=/data"]   # appended after the global ones
 ```
 
 | Setting | Meaning |
 |---|---|
 | `command` | Payload for the `command` pane; default `claude` |
 | `up_timeout_secs` | Bring-up timeout in seconds; default `300` |
+| `up_args` (global) | Extra arguments appended to `devcontainer up` for every repository |
 | `enabled = "auto"` | Require a Dev Container config at a standard or explicitly configured path |
 | `enabled = "true"` | Skip detection entirely and let `devcontainer up` decide what is valid |
 | `enabled = "false"` | Refuse to open container panes for that repository |
 | `config` | Alternate repo-relative `devcontainer.json` path |
 | `shell` | Shell to exec into, overriding the one probed from the container |
 | `env` | `KEY=value` assignments passed to `docker exec -e` |
+| `up_args` (per repo) | Extra arguments appended to `devcontainer up` after the global `up_args` |
 
 An `env` entry that is not `KEY=value` is dropped with a warning rather than
 forwarded: `docker exec -e NAME` with no `=` exports the *host's* variable of
 that name into the container, which is never what the setting asked for.
+
+`up_args` is an array of separate arguments, not a shell string: write `["--log-level", "debug"]`, not `["--log-level debug"]`.
+Each entry is passed as-is, with no shell expansion.
+An `up_args` list that contains a non-string, an empty string, or one of `--workspace-folder`, `--config`, or `--id-label` is ignored as a whole with a warning.
+The reserved flags' camelCase aliases (`--workspaceFolder`, `--idLabel`) and `--flag=value` forms are rejected too.
+The plugin sets the first two itself, and `--id-label` would replace the labels it uses to find and stop the container.
 
 Under `auto`, detection checks, in order:
 
@@ -388,12 +446,12 @@ installing the plugin into a real Herdr and exercising all three entrypoints.
 ## Status
 
 The current release is
-[`v0.2.0`](https://github.com/gambtho/herdr-devcontainer/releases/tag/v0.2.0),
+[`v0.2.1`](https://github.com/gambtho/herdr-devcontainer/releases/tag/v0.2.1),
 matching the version in both `Cargo.toml` and the plugin manifest. Pin to it
 with `--ref` to install a reviewed revision:
 
 ```sh
-herdr plugin install gambtho/herdr-devcontainer --ref v0.2.0
+herdr plugin install gambtho/herdr-devcontainer --ref v0.2.1
 ```
 
 An install without `--ref` follows the current default branch instead.

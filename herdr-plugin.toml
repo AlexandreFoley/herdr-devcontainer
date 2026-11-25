@@ -1,6 +1,6 @@
 id = "devcontainer"
 name = "Dev Container"
-version = "0.2.0"
+version = "0.2.1"
 min_herdr_version = "0.8.0"
 description = "Open herdr panes inside the repository's Dev Container."
 platforms = ["linux"]
@@ -26,6 +26,12 @@ title = "Stop Dev Container"
 placement = "popup"
 command = ["./target/release/herdr-devc", "stop"]
 
+[[panes]]
+id = "remote"
+title = "Set Up Dev Container on Remote Machines"
+placement = "popup"
+command = ["./target/release/herdr-devc", "remote", "install"]
+
 [[actions]]
 id = "open-shell"
 title = "Open Dev Container Shell"
@@ -43,3 +49,9 @@ id = "open-stop"
 title = "Stop Dev Container"
 contexts = ["workspace"]
 command = ["./target/release/herdr-devc", "open", "stop"]
+
+[[actions]]
+id = "open-remote"
+title = "Set Up Dev Container on Remote Machines"
+contexts = ["workspace"]
+command = ["./target/release/herdr-devc", "open", "remote"]

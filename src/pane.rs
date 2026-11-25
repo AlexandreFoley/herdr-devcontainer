@@ -41,6 +41,7 @@ pub fn run_pane(shell: bool) -> Result<(), Error> {
             &repo_root,
             &worktrees_dir,
             detection.config_arg.as_deref(),
+            &cfg.up_args(&repo_cfg),
             Duration::from_secs(cfg.up_timeout_secs),
         )?
     };
